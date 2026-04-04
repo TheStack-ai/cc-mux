@@ -3,7 +3,7 @@ import { createInterface } from 'node:readline';
 import path from 'node:path';
 import os from 'node:os';
 
-const DEFAULT_LOG_PATH = path.join(os.homedir(), '.claude-gate', 'logs', 'metrics.jsonl');
+const DEFAULT_LOG_PATH = path.join(os.homedir(), '.cc-mux', 'logs', 'metrics.jsonl');
 
 // ── ANSI helpers ──
 
@@ -50,7 +50,7 @@ const OPUS_PRICING = Object.freeze({ input: 15, output: 75 });
 const TRANSLATIONS = {
   en: {
     locale: 'en-GB',
-    title: 'CC Gate',
+    title: 'CC Mux',
     sections: {
       live: 'Live',
       routing: 'Routing',
@@ -73,7 +73,7 @@ const TRANSLATIONS = {
   },
   ko: {
     locale: 'ko-KR',
-    title: 'CC Gate',
+    title: 'CC Mux',
     sections: {
       live: '실시간',
       routing: '라우팅',

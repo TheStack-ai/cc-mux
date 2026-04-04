@@ -55,7 +55,7 @@ test('claude-gate advise prints formatted advisor output', async (t) => {
   ].join('\n'));
 
   const { stdout } = await execFileAsync(process.execPath, [
-    path.join(process.cwd(), 'bin', 'cc-gate'),
+    path.join(process.cwd(), 'bin', 'cc-mux'),
     'advise',
     '--log',
     logPath,
