@@ -72,32 +72,49 @@ function getLastUserContentBlocks(body) {
   return Array.isArray(last?.content) ? last.content : null;
 }
 
-function detectLastMessageIsToolResult(body) {
-  const content = getLastUserContentBlocks(body);
-  if (!Array.isArray(content) || content.length === 0) return false;
-  const allToolResult = content.every((block) => block?.type === 'tool_result');
-  if (!allToolResult) return false;
-  // Don't route if any tool_result has is_error — Claude should handle errors
-  const hasError = content.some((block) => block?.is_error === true);
-  return !hasError;
+// Heuristic: detect auto-inserted text blocks that should not block tool-continuation routing.
+// Uses substring matching — not full tag boundary validation. A tool_result whose content
+// happens to contain '<system-reminder>' as a literal string would also match, but tool_result
+// blocks bypass this function (they're checked by type, not content). Practical risk is low
+// since this runs on the local proxy only.
+function isAutoInsertedText(block) {
+  if (block?.type !== 'text') return false;
+  const text = typeof block.text === 'string' ? block.text : '';
+  if (!text.trim()) return true;
+  if (text.includes('<system-reminder>')) return true;
+  if (text.includes('<environment_details>')) return true;
+  return false;
 }
 
-function detectLastMessageHasMixedToolResult(body) {
+function analyzeLastMessageContent(body) {
   const content = getLastUserContentBlocks(body);
-  if (!Array.isArray(content) || content.length === 0) return false;
-
+  if (!Array.isArray(content) || content.length === 0) {
+    return { hasToolResult: false, hasUserContent: false, hasError: false };
+  }
   let hasToolResult = false;
-  let hasNonToolResult = false;
-
+  let hasUserContent = false;
+  let hasError = false;
   for (const block of content) {
     if (block?.type === 'tool_result') {
       hasToolResult = true;
-    } else {
-      hasNonToolResult = true;
+      if (block?.is_error === true) hasError = true;
+    } else if (!isAutoInsertedText(block)) {
+      // User-written text or unknown block type
+      hasUserContent = true;
     }
   }
+  return { hasToolResult, hasUserContent, hasError };
+}
 
-  return hasToolResult && hasNonToolResult;
+function detectLastMessageIsToolResult(body) {
+  const { hasToolResult, hasUserContent, hasError } = analyzeLastMessageContent(body);
+  // Don't route if any tool_result has is_error — Claude should handle errors
+  return hasToolResult && !hasUserContent && !hasError;
+}
+
+function detectLastMessageHasMixedToolResult(body) {
+  const { hasToolResult, hasUserContent } = analyzeLastMessageContent(body);
+  return hasToolResult && hasUserContent;
 }
 
 export class RequestClassifier {
@@ -122,6 +139,9 @@ export class RequestClassifier {
     const model = body?.model ?? null;
     const lastMessageIsToolResult = detectLastMessageIsToolResult(body);
     const lastMessageHasMixedToolResult = detectLastMessageHasMixedToolResult(body);
+    // Intentional: tool-continuation messages (lastMessageIsToolResult) are always shadow-eligible
+    // regardless of thinking mode or tool count, because they represent deterministic follow-ups
+    // (tool output → next action) where Codex comparison is most valuable.
     const shadowEligible = lastMessageIsToolResult || (!lastMessageHasMixedToolResult && isAgentQuerySource(querySource) && toolCount <= 5 && !thinking);
 
     return {
@@ -136,6 +156,7 @@ export class RequestClassifier {
       thinking,
       shadowEligible,
       lastMessageIsToolResult,
+      lastMessageHasMixedToolResult,
       rawBodyBytes: bodyBuffer.length,
       parseOk: body !== null,
       isKnownQuerySource: false,

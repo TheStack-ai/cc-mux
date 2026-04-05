@@ -245,6 +245,17 @@ function parseCodexOutput({ lines, stderr, exitCode }, model) {
     }
   }
 
+  // Empty response (no text, no tool calls) means parsing extracted nothing useful.
+  // Return error so the proxy falls back to Anthropic instead of sending an empty SSE stream.
+  if (!text && toolCalls.length === 0) {
+    return {
+      error: { message: `codex returned no usable content (exit ${exitCode}, ${lines.length} lines parsed)` },
+      choices: [],
+      usage,
+      model,
+    };
+  }
+
   return {
     id: `codex-${Date.now()}`,
     model,

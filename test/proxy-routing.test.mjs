@@ -304,6 +304,304 @@ test('proxy falls back to openai on anthropic 529 before streaming starts', asyn
   assert.equal(logLines.at(-1).routed_to, 'openai_fallback');
 });
 
+test('proxy streams text-only codex response as Anthropic SSE', async (t) => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'claude-gate-stream-text-'));
+  t.after(async () => {
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  const logPath = path.join(tempDir, 'metrics.jsonl');
+  const logger = new MetricsLogger({ logPath });
+  t.after(async () => {
+    await logger.close();
+  });
+
+  const response = await runProxyRequest({
+    logger,
+    body: {
+      model: 'claude-opus-4-6',
+      stream: true,
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'summarize' }] }],
+      tools: [{ name: 'Read', description: 'read', input_schema: { type: 'object' } }],
+      metadata: { user_id: '{"querySource":"agent:default"}' },
+    },
+    codexFn: async () => ({
+      id: 'chatcmpl_text_only',
+      model: 'gpt-5.4',
+      usage: { prompt_tokens: 10, completion_tokens: 6 },
+      choices: [{
+        finish_reason: 'stop',
+        message: { content: 'Here is the summary.' },
+      }],
+    }),
+    config: {
+      anthropic: { base_url: 'http://anthropic.invalid' },
+      openai: { default_model: 'gpt-5.4' },
+      routing: {
+        enabled: true,
+        rules: [{
+          name: 'agent-to-codex',
+          enabled: true,
+          target: 'openai',
+          model: 'gpt-5.4',
+          condition: { query_source: ['agent:default'], tool_count_max: 3, thinking_enabled: false },
+        }],
+      },
+      shadow: { enabled: false },
+    },
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.headers['content-type'], 'text/event-stream');
+
+  const events = parseSseEvents(response.body.toString('utf8'));
+  assert.deepEqual(events.map((e) => e.event), [
+    'message_start',
+    'content_block_start',
+    'content_block_delta',
+    'content_block_stop',
+    'message_delta',
+    'message_stop',
+  ]);
+  assert.equal(events[2].data.delta.text, 'Here is the summary.');
+  assert.equal(events[4].data.delta.stop_reason, 'end_turn');
+});
+
+test('proxy routes streaming request when tool_result + system-reminder mixed', async (t) => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'claude-gate-mixed-route-'));
+  t.after(async () => {
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  const logPath = path.join(tempDir, 'metrics.jsonl');
+  const logger = new MetricsLogger({ logPath });
+  t.after(async () => {
+    await logger.close();
+  });
+
+  let codexCalled = false;
+  const response = await runProxyRequest({
+    logger,
+    body: {
+      model: 'claude-opus-4-6',
+      stream: true,
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'tool_result', tool_use_id: 'tu_1', content: [{ type: 'text', text: 'file contents here' }] },
+          { type: 'text', text: '<system-reminder>\nHook result\n</system-reminder>' },
+        ],
+      }],
+      tools: [{ name: 'Read', description: 'read', input_schema: { type: 'object' } }],
+      metadata: { user_id: '{"querySource":"agent:default"}' },
+    },
+    codexFn: async () => {
+      codexCalled = true;
+      return {
+        id: 'chatcmpl_mixed',
+        model: 'gpt-5.4',
+        usage: { prompt_tokens: 15, completion_tokens: 3 },
+        choices: [{
+          finish_reason: 'stop',
+          message: { content: 'Noted.' },
+        }],
+      };
+    },
+    config: {
+      anthropic: { base_url: 'http://anthropic.invalid' },
+      openai: { default_model: 'gpt-5.4' },
+      routing: {
+        enabled: true,
+        rules: [{
+          name: 'tool-continuation',
+          enabled: true,
+          target: 'openai',
+          model: 'gpt-5.4',
+          condition: { last_message_tool_result: true, thinking_enabled: false },
+        }],
+      },
+      shadow: { enabled: false },
+    },
+  });
+
+  assert.equal(codexCalled, true, 'codexFn should be called for mixed tool_result + system-reminder');
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.headers['content-type'], 'text/event-stream');
+
+  const events = parseSseEvents(response.body.toString('utf8'));
+  assert.equal(events[0].event, 'message_start');
+  assert.equal(events.at(-1).event, 'message_stop');
+});
+
+test('proxy falls back to anthropic when codexFn returns error', async (t) => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'claude-gate-codex-err-'));
+  t.after(async () => {
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  const logPath = path.join(tempDir, 'metrics.jsonl');
+  const logger = new MetricsLogger({ logPath });
+  t.after(async () => {
+    await logger.close();
+  });
+
+  let anthropicCalled = false;
+  const response = await runProxyRequest({
+    logger,
+    body: {
+      model: 'claude-opus-4-6',
+      stream: true,
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'hello' }] }],
+      tools: [{ name: 'Read', description: 'read', input_schema: { type: 'object' } }],
+      metadata: { user_id: '{"querySource":"agent:default"}' },
+    },
+    codexFn: async () => ({
+      error: { message: 'codex exec failed (exit 1): token expired' },
+      choices: [],
+      usage: null,
+      model: 'gpt-5.4',
+    }),
+    anthropicExecutor: async () => {
+      anthropicCalled = true;
+      return {
+        statusCode: 200,
+        headers: { 'content-type': 'text/event-stream' },
+        body: 'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_fallback","type":"message","role":"assistant","content":[],"model":"claude-opus-4-6","stop_reason":null,"usage":{"input_tokens":10,"output_tokens":0}}}\n\n',
+      };
+    },
+    config: {
+      anthropic: { base_url: 'http://anthropic.invalid' },
+      openai: { default_model: 'gpt-5.4' },
+      routing: {
+        enabled: true,
+        rules: [{
+          name: 'agent-to-codex',
+          enabled: true,
+          target: 'openai',
+          model: 'gpt-5.4',
+          condition: { query_source: ['agent:default'], tool_count_max: 3, thinking_enabled: false },
+        }],
+      },
+      shadow: { enabled: false },
+    },
+  });
+
+  assert.equal(anthropicCalled, true, 'should fall back to anthropic when codex returns error');
+  assert.equal(response.statusCode, 200);
+});
+
+test('proxy falls back to anthropic when codexFn throws', async (t) => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'claude-gate-codex-throw-'));
+  t.after(async () => {
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  const logPath = path.join(tempDir, 'metrics.jsonl');
+  const logger = new MetricsLogger({ logPath });
+  t.after(async () => {
+    await logger.close();
+  });
+
+  let anthropicCalled = false;
+  const response = await runProxyRequest({
+    logger,
+    body: {
+      model: 'claude-opus-4-6',
+      stream: true,
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'hello' }] }],
+      tools: [{ name: 'Read', description: 'read', input_schema: { type: 'object' } }],
+      metadata: { user_id: '{"querySource":"agent:default"}' },
+    },
+    codexFn: async () => {
+      throw new Error('ECONNREFUSED: codex CLI not responding');
+    },
+    anthropicExecutor: async () => {
+      anthropicCalled = true;
+      return {
+        statusCode: 200,
+        headers: { 'content-type': 'text/event-stream' },
+        body: 'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_fb2","type":"message","role":"assistant","content":[],"model":"claude-opus-4-6","stop_reason":null,"usage":{"input_tokens":10,"output_tokens":0}}}\n\n',
+      };
+    },
+    config: {
+      anthropic: { base_url: 'http://anthropic.invalid' },
+      openai: { default_model: 'gpt-5.4' },
+      routing: {
+        enabled: true,
+        rules: [{
+          name: 'agent-to-codex',
+          enabled: true,
+          target: 'openai',
+          model: 'gpt-5.4',
+          condition: { query_source: ['agent:default'], tool_count_max: 3, thinking_enabled: false },
+        }],
+      },
+      shadow: { enabled: false },
+    },
+  });
+
+  assert.equal(anthropicCalled, true, 'should fall back to anthropic when codex throws');
+  assert.equal(response.statusCode, 200);
+});
+
+test('proxy falls back to anthropic when codex returns empty content (no text, no tool_calls)', async (t) => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'claude-gate-codex-empty-'));
+  t.after(async () => {
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  const logPath = path.join(tempDir, 'metrics.jsonl');
+  const logger = new MetricsLogger({ logPath });
+  t.after(async () => {
+    await logger.close();
+  });
+
+  let anthropicCalled = false;
+  const response = await runProxyRequest({
+    logger,
+    body: {
+      model: 'claude-opus-4-6',
+      stream: true,
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'hello' }] }],
+      tools: [{ name: 'Read', description: 'read', input_schema: { type: 'object' } }],
+      metadata: { user_id: '{"querySource":"agent:default"}' },
+    },
+    codexFn: async () => ({
+      // Simulates codex exit 0 + garbage output: parsed but no usable content
+      error: { message: 'codex returned no usable content (exit 0, 3 lines parsed)' },
+      choices: [],
+      usage: null,
+      model: 'gpt-5.4',
+    }),
+    anthropicExecutor: async () => {
+      anthropicCalled = true;
+      return {
+        statusCode: 200,
+        headers: { 'content-type': 'text/event-stream' },
+        body: 'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_empty_fb","type":"message","role":"assistant","content":[],"model":"claude-opus-4-6","stop_reason":null,"usage":{"input_tokens":10,"output_tokens":0}}}\n\n',
+      };
+    },
+    config: {
+      anthropic: { base_url: 'http://anthropic.invalid' },
+      openai: { default_model: 'gpt-5.4' },
+      routing: {
+        enabled: true,
+        rules: [{
+          name: 'agent-to-codex',
+          enabled: true,
+          target: 'openai',
+          model: 'gpt-5.4',
+          condition: { query_source: ['agent:default'], tool_count_max: 3, thinking_enabled: false },
+        }],
+      },
+      shadow: { enabled: false },
+    },
+  });
+
+  assert.equal(anthropicCalled, true, 'should fall back to anthropic when codex returns empty content');
+  assert.equal(response.statusCode, 200);
+});
+
 test('proxy does not fallback on anthropic 529 for non-agent requests', async () => {
   const logger = new MetricsLogger({ logPath: path.join(os.tmpdir(), `cc-mux-${Date.now()}.jsonl`) });
   let openaiCalls = 0;

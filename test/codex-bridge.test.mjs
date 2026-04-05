@@ -126,3 +126,47 @@ process.stdout.write(JSON.stringify({
   }]);
   assert.equal(result.choices[0].finish_reason, 'tool_calls');
 });
+
+test('callCodexCli returns error when exit code is non-zero and no output', async (t) => {
+  const fakeCodexPath = await makeFakeCodex(t, `#!/usr/bin/env node
+import process from 'node:process';
+
+for await (const _ of process.stdin) {
+}
+
+process.stderr.write('authentication required');
+process.exit(1);
+`);
+
+  const result = await callCodexCli({
+    codexPath: fakeCodexPath,
+    messages: [{ role: 'user', content: 'test' }],
+  });
+
+  assert.ok(result.error, 'should have an error field');
+  assert.ok(result.error.message.includes('exit 1'), 'error message should include exit code');
+  assert.deepEqual(result.choices, []);
+});
+
+test('callCodexCli handles malformed/garbage output gracefully', async (t) => {
+  const fakeCodexPath = await makeFakeCodex(t, `#!/usr/bin/env node
+import process from 'node:process';
+
+for await (const _ of process.stdin) {
+}
+
+process.stdout.write('not json at all\\n');
+process.stdout.write('another garbage line\\n');
+process.stdout.write('{malformed json\\n');
+`);
+
+  const result = await callCodexCli({
+    codexPath: fakeCodexPath,
+    messages: [{ role: 'user', content: 'test' }],
+  });
+
+  // Garbage output yields no usable content → error so proxy can fall back
+  assert.ok(result.error, 'should have an error field for garbage output');
+  assert.ok(result.error.message.includes('no usable content'), 'error message should describe the issue');
+  assert.deepEqual(result.choices, []);
+});
