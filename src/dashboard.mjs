@@ -339,6 +339,7 @@ function renderFrame(state, cols, keyboardEnabled) {
   const t = getTranslations(state.lang);
   const w = Math.max(44, Math.min(cols - 2, 60));
   const pad = (str, len) => str + ' '.repeat(Math.max(0, len - displayWidth(str)));
+  const row = (content) => `${CYAN}│${RESET}${pad(content, w)}${CYAN}│${RESET}`;
   const hr = `${DIM}${'─'.repeat(w - 4)}${RESET}`;
   const lines = [];
 
@@ -350,65 +351,65 @@ function renderFrame(state, cols, keyboardEnabled) {
 
   // Header
   lines.push(`${CYAN}╭${'─'.repeat(w)}╮${RESET}`);
-  lines.push(`${CYAN}│${RESET}${BOLD}${pad(`  ${t.title}`, w)}${CYAN}│${RESET}`);
-  lines.push(`${CYAN}│${RESET}${DIM}${pad(`  ${t.status.running(elapsedStr(Date.now() - state.startedAt, state.lang), startTimeStr)}`, w)}${RESET}${CYAN}│${RESET}`);
+  lines.push(row(`${BOLD}  ${t.title}`));
+  lines.push(row(`${DIM}  ${t.status.running(elapsedStr(Date.now() - state.startedAt, state.lang), startTimeStr)}${RESET}`));
   lines.push(`${CYAN}├${'─'.repeat(w)}┤${RESET}`);
 
   // Routing section
-  lines.push(`${CYAN}│${RESET}${pad(`  ${BOLD}${t.sections.routing}${RESET}`, w)}${CYAN}│${RESET}`);
-  lines.push(`${CYAN}│${RESET}  ${hr}  ${CYAN}│${RESET}`);
+  lines.push(row(`  ${BOLD}${t.sections.routing}${RESET}`));
+  lines.push(row(`  ${hr}  `));
 
   // Combined routing bar
   const barWidth = Math.min(20, w - 30);
   const codexFill = Math.round(codexRatio * barWidth);
   const claudeFill = barWidth - codexFill;
   const routingBar = `${DIM}${'█'.repeat(claudeFill)}${RESET}${GREEN}${'█'.repeat(codexFill)}${RESET}`;
-  lines.push(`${CYAN}│${RESET}${pad(`  ${fitText(t.status.claudeReqs, 12)}${fitText(String(state.claudeCount), 6)}`, w)}${CYAN}│${RESET}`);
-  lines.push(`${CYAN}│${RESET}${pad(`  ${fitText(t.status.codexReqs, 12)}${GREEN}${fitText(String(state.codexCount), 6)}${RESET}`, w)}${CYAN}│${RESET}`);
+  lines.push(row(`  ${fitText(t.status.claudeReqs, 12)}${fitText(String(state.claudeCount), 6)}`));
+  lines.push(row(`  ${fitText(t.status.codexReqs, 12)}${GREEN}${fitText(String(state.codexCount), 6)}${RESET}`));
   const ratioColor = codexRatio > 0 ? GREEN : DIM;
-  lines.push(`${CYAN}│${RESET}${pad(`  ${fitText(t.status.routingRatio, 12)}${ratioColor}${formatPercent(codexRatio)}${RESET}  ${routingBar}`, w)}${CYAN}│${RESET}`);
+  lines.push(row(`  ${fitText(t.status.routingRatio, 12)}${ratioColor}${formatPercent(codexRatio)}${RESET}  ${routingBar}`));
 
   if (state.fallback529Count > 0) {
-    lines.push(`${CYAN}│${RESET}${pad(`  ${fitText(t.status.fallback529, 16)}${YELLOW}${state.fallback529Count}${RESET}`, w)}${CYAN}│${RESET}`);
+    lines.push(row(`  ${fitText(t.status.fallback529, 16)}${YELLOW}${state.fallback529Count}${RESET}`));
   }
 
   lines.push(`${CYAN}├${'─'.repeat(w)}┤${RESET}`);
 
   // Cost section (merged from routing + session)
   const savingsColor = state.codexSavings > 0 ? GREEN : DIM;
-  lines.push(`${CYAN}│${RESET}${pad(`  ${fitText(t.status.claudeCost, 16)}${formatCost(state.claudeCost)}`, w)}${CYAN}│${RESET}`);
-  lines.push(`${CYAN}│${RESET}${pad(`  ${fitText(t.status.savings, 16)}${savingsColor}-${formatCost(state.codexSavings)}${RESET} ${DIM}${t.status.savingsNote}${RESET}`, w)}${CYAN}│${RESET}`);
-  lines.push(`${CYAN}│${RESET}${pad(`  ${fitText(t.status.totalTokens, 16)}${formatTokens(totalTokens)} tok`, w)}${CYAN}│${RESET}`);
+  lines.push(row(`  ${fitText(t.status.claudeCost, 16)}${formatCost(state.claudeCost)}`));
+  lines.push(row(`  ${fitText(t.status.savings, 16)}${savingsColor}-${formatCost(state.codexSavings)}${RESET} ${DIM}${t.status.savingsNote}${RESET}`));
+  lines.push(row(`  ${fitText(t.status.totalTokens, 16)}${formatTokens(totalTokens)} tok`));
 
   // Latency comparison
-  lines.push(`${CYAN}│${RESET}${pad(`  ${fitText(t.status.claudeAvgLatency, 16)}${formatSeconds(claudeAvgLatency)}`, w)}${CYAN}│${RESET}`);
+  lines.push(row(`  ${fitText(t.status.claudeAvgLatency, 16)}${formatSeconds(claudeAvgLatency)}`));
   if (state.codexCount > 0) {
-    lines.push(`${CYAN}│${RESET}${pad(`  ${fitText(t.status.codexAvgLatency, 16)}${formatSeconds(codexAvgLatency)}`, w)}${CYAN}│${RESET}`);
+    lines.push(row(`  ${fitText(t.status.codexAvgLatency, 16)}${formatSeconds(codexAvgLatency)}`));
   }
 
   if (state.retryCount > 0) {
-    lines.push(`${CYAN}│${RESET}${pad(`  ${fitText(t.status.retries, 16)}${YELLOW}${state.retryCount}${RESET}`, w)}${CYAN}│${RESET}`);
+    lines.push(row(`  ${fitText(t.status.retries, 16)}${YELLOW}${state.retryCount}${RESET}`));
   }
 
   lines.push(`${CYAN}├${'─'.repeat(w)}┤${RESET}`);
 
   // Live activity
-  lines.push(`${CYAN}│${RESET}${pad(`  ${BOLD}${t.sections.live}${RESET}  ${DIM}${state.apiCalls} calls${RESET}`, w)}${CYAN}│${RESET}`);
-  lines.push(`${CYAN}│${RESET}  ${hr}  ${CYAN}│${RESET}`);
+  lines.push(row(`  ${BOLD}${t.sections.live}${RESET}  ${DIM}${state.apiCalls} calls${RESET}`));
+  lines.push(row(`  ${hr}  `));
 
   if (state.recentEvents.length === 0) {
-    lines.push(`${CYAN}│${RESET}${DIM}${pad(`  ${t.status.waiting}`, w)}${RESET}${CYAN}│${RESET}`);
+    lines.push(row(`${DIM}  ${t.status.waiting}${RESET}`));
   } else {
     for (const evt of state.recentEvents) {
       const line = `  ${DIM}${evt.time}${RESET} ${evt.routeTag} ${fitText(evt.tokens, 6)} ${fitText(evt.latency, 5)} ${evt.statusIcon}`;
-      lines.push(`${CYAN}│${RESET}${pad(line, w)}${CYAN}│${RESET}`);
+      lines.push(row(line));
     }
   }
 
   // Footer
   lines.push(`${CYAN}├${'─'.repeat(w)}┤${RESET}`);
   const hints = keyboardEnabled ? t.status.keyHints : 'Ctrl+C exit';
-  lines.push(`${CYAN}│${RESET}${DIM}${pad(`  ${hints}`, w)}${RESET}${CYAN}│${RESET}`);
+  lines.push(row(`${DIM}  ${hints}${RESET}`));
   lines.push(`${CYAN}╰${'─'.repeat(w)}╯${RESET}`);
 
   return lines;
