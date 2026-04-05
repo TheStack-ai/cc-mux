@@ -331,11 +331,10 @@ function renderFrame(state, cols, keyboardEnabled) {
   lines.push(`${CYAN}│${RESET}${pad(`  ${fitText(t.status.claudeReqs, 12)}${fitText(String(state.claudeCount), 6)}${claudeBar}`, w)}${CYAN}│${RESET}`);
   lines.push(`${CYAN}│${RESET}${pad(`  ${fitText(t.status.codexReqs, 12)}${GREEN}${fitText(String(state.codexCount), 6)}${RESET}${codexBar}`, w)}${CYAN}│${RESET}`);
 
-  if (state.codexCount > 0) {
-    const codexTokensTotal = state.codexInputTokens + state.codexOutputTokens;
-    lines.push(`${CYAN}│${RESET}${pad(`  ${fitText(t.status.codexTokens, 12)}${GREEN}${formatTokens(codexTokensTotal)} tok${RESET}`, w)}${CYAN}│${RESET}`);
-    lines.push(`${CYAN}│${RESET}${pad(`  ${fitText(t.status.savings, 12)}${GREEN}~${formatCost(state.codexSavings)}${RESET}`, w)}${CYAN}│${RESET}`);
-  }
+  const codexTokensTotal = state.codexInputTokens + state.codexOutputTokens;
+  const savingsColor = state.codexSavings > 0 ? GREEN : DIM;
+  lines.push(`${CYAN}│${RESET}${pad(`  ${fitText(t.status.codexTokens, 16)}${savingsColor}${formatTokens(codexTokensTotal)} tok${RESET}`, w)}${CYAN}│${RESET}`);
+  lines.push(`${CYAN}│${RESET}${pad(`  ${fitText(t.status.savings, 16)}${savingsColor}~${formatCost(state.codexSavings)}${RESET}`, w)}${CYAN}│${RESET}`);
 
   if (state.fallback529Count > 0) {
     lines.push(`${CYAN}│${RESET}${pad(`  ${fitText(t.status.fallback529, 16)}${YELLOW}${state.fallback529Count}${RESET}`, w)}${CYAN}│${RESET}`);
