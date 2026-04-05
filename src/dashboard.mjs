@@ -416,17 +416,21 @@ export async function startDashboard(options = {}) {
 
   const draw = (force = false) => {
     const currentCols = process.stdout.columns || 80;
-    const frame = renderFrame(state, currentCols, keyboardEnabled).join('\n');
+    const rows = process.stdout.rows || 24;
+    const frame = renderFrame(state, currentCols, keyboardEnabled);
+    // Truncate to terminal height to prevent scrolling
+    const visible = frame.slice(0, rows - 1).join('\n');
 
     if (ANSI.enabled) {
+      ANSI.clear();
       ANSI.moveTo(1, 1);
-      process.stdout.write(frame + '\n');
-    } else if (force || frame !== lastFrame) {
+      process.stdout.write(visible + '\n');
+    } else if (force || visible !== lastFrame) {
       if (lastFrame) process.stdout.write('\n');
-      process.stdout.write(frame + '\n');
+      process.stdout.write(visible + '\n');
     }
 
-    lastFrame = frame;
+    lastFrame = visible;
   };
 
   const refreshFromLog = async (forceDraw = false) => {
