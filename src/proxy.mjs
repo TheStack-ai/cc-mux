@@ -305,13 +305,6 @@ export async function proxyRequest({
   const route = selectRoute(classification, config);
   const canUseOpenAIResponse = supportsOpenAIProxyResponse(parsedBody);
 
-  // Log routing decision reason
-  if (route) {
-    log.info?.('[cc-mux] routing to codex', { requestId, rule: route.name, lastMessageIsToolResult: classification.lastMessageIsToolResult });
-  } else if (classification.lastMessageIsToolResult === false && classification.lastMessageHasMixedToolResult) {
-    log.info?.('[cc-mux] skipped routing: mixed tool_result + text', { requestId });
-  }
-
   if (route?.target === 'openai' && canUseOpenAIResponse) {
     try {
       await respondWithOpenAICompletion({
@@ -332,20 +325,33 @@ export async function proxyRequest({
         route: route.name,
       });
     }
-  } else if (route?.target === 'openai' && !canUseOpenAIResponse) {
-    // Streaming request → call Codex CLI, convert response to Anthropic format, fake-stream it
+  } else if (route?.target === 'openai' && !canUseOpenAIResponse && !res.destroyed) {
+    // Streaming request → call Codex CLI, convert response to Anthropic format
     try {
       const anthropicBody = tryParseJsonBuffer(bodyBuffer);
       const openaiBody = convertAnthropicToOpenAI(anthropicBody, config.openai);
       const model = route.model || config?.openai?.default_model || 'gpt-5.4';
       const runCodex = codexFn || callCodexCli;
-      const timeoutMs = config?.routing?.timeout_ms ?? 60_000;
+      const timeoutMs = config?.routing?.timeout_ms ?? 15_000;
+
+      // Abort Codex if client disconnects
+      let clientDisconnected = false;
+      const onClose = () => { clientDisconnected = true; };
+      res.once('close', onClose);
+
       const codexResult = await runCodex({
         messages: openaiBody.messages || [],
         tools: openaiBody.tools || [],
         model,
         timeoutMs,
       });
+
+      res.off('close', onClose);
+      if (clientDisconnected) {
+        log.info?.('[cc-mux] client disconnected during codex routing, skipping response', { requestId });
+        await finalizeTurn(499);
+        return;
+      }
 
       if (codexResult.error) {
         throw new Error(codexResult.error.message || 'codex_cli_error');
@@ -377,7 +383,7 @@ export async function proxyRequest({
       log.error?.('[cc-mux] streaming codex route failed; falling back to anthropic', {
         error: error.message,
         requestId,
-        route: route.name,
+        route: route?.name,
       });
     }
   }
@@ -602,6 +608,11 @@ export async function startProxyServer(options = {}) {
   let shuttingDown = false;
   let shutdownPromise = null;
 
+  // Circuit breaker: disable routing after consecutive failures
+  let codexFailCount = 0;
+  const CODEX_MAX_FAILURES = 3;
+  let codexDisabledUntil = 0;
+
   const server = http.createServer(async (req, res) => {
     if (shuttingDown) {
       res.writeHead(503, { 'content-type': 'application/json' });
@@ -610,18 +621,39 @@ export async function startProxyServer(options = {}) {
     }
 
     try {
+      // Circuit breaker: temporarily disable routing after consecutive failures
+      const now = Date.now();
+      const routingDisabled = codexFailCount >= CODEX_MAX_FAILURES && now < codexDisabledUntil;
+      const effectiveConfig = routingDisabled
+        ? { ...config, routing: { ...config.routing, enabled: false } }
+        : config;
+
+      const beforeFails = codexFailCount;
       await proxyRequest({
         req,
         res,
-        config,
+        config: effectiveConfig,
         logger,
         classifier,
         log,
         shadow,
         cache,
         openAIRequestImpl: options.openAIRequestImpl ?? null,
-        codexFn: options.codexFn ?? null,
+        codexFn: options.codexFn ?? (routingDisabled ? null : async (...args) => {
+          const result = await callCodexCli(...args);
+          if (result.error) {
+            codexFailCount += 1;
+            if (codexFailCount >= CODEX_MAX_FAILURES) {
+              codexDisabledUntil = Date.now() + 5 * 60 * 1000;
+              log.error?.('[cc-mux] circuit breaker: routing disabled for 5 min after ' + codexFailCount + ' failures');
+            }
+          } else {
+            codexFailCount = 0;
+          }
+          return result;
+        }),
       });
+
     } catch (error) {
       log.error?.('[claude-gate] request handling failed', {
         error: error.message,
